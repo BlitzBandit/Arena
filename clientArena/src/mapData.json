@@ -1,0 +1,10 @@
+{
+  "0,0": { "type": "grass_1", "traversable": true },
+  "1,0": { "type": "grass_2", "traversable": true },
+  "2,0": { "type": "grass_1", "traversable": true },
+  "0,1": { "type": "grass_3", "traversable": true },
+  "1,1": { "type": "grass_1", "traversable": true },
+  "-1,2": { "type": "grass_2", "traversable": true },
+  "0,2": { "type": "grass_1", "traversable": true },
+  "1,2": { "type": "grass_3", "traversable": true }
+}
