@@ -1,11 +1,13 @@
 import { useRef, useCallback, useMemo, useEffect } from 'react';
 import { useResponsiveCanvas } from '../hooks/useResponsiveCanvas';
 import { SPRITES } from '../sprites';
-// Update import to findPath
-import { axialToPixel, pixelToAxial, findPath, getHexDistance } from '../utils/hexMath';
+// We only need the geometric math now!
+import { axialToPixel, pixelToAxial, getHexDistance } from '../utils/hexMath';
 
-// Added activePath to props
-export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath, isPlayerSelected, onHexClick }) {
+export default function GameCanvas({ 
+  spriteSheet, mapData, playerPos, activePath, drawnPath, 
+  isPlayerSelected, onHexClick, onPathStart, onPathHover, onPathEnd 
+}) {
   const camera = useRef({ x: 0, y: 0, zoom: 0.6 });
   const isDragging = useRef(false);
   const lastMousePos = useRef({ x: 0, y: 0 });
@@ -13,49 +15,44 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
   const hasDragged = useRef(false);
   const hoveredHex = useRef(null);
 
+  // NEW: State ref to tell the mouse what type of drag we are doing
+  const isDrawingPath = useRef(false);
+
   const charPixelPos = useRef(null); 
   const charFacingIdx = useRef(0); 
   const isMoving = useRef(false);
 
   const currentPathQueue = useRef([]);
   const targetNode = useRef(null);
-
-  // NEW: Track where the character physically is for the Fog of War
   const currentVisualHex = useRef(playerPos);
 
-  // NEW: Sync the visual hex if the player isn't moving (like on initial load)
+  const hexWidth = 128; 
+  const hexFaceHeight = 88; 
+
+  // ... KEEP getFacingFrame EXACTLY THE SAME ...
+  const getFacingFrame = (angleDeg) => {
+    if (angleDeg >= 112.5 && angleDeg < 157.5) return 0; 
+    if (angleDeg >= 67.5 && angleDeg < 112.5) return 1;  
+    if (angleDeg >= 22.5 && angleDeg < 67.5) return 2;   
+    if (angleDeg >= -22.5 && angleDeg < 22.5) return 3;  
+    if (angleDeg >= -67.5 && angleDeg < -22.5) return 4; 
+    if (angleDeg >= -112.5 && angleDeg < -67.5) return 5; 
+    if (angleDeg >= -157.5 && angleDeg < -112.5) return 6; 
+    return 7; 
+  };
+
   useEffect(() => {
     if (!isMoving.current) {
       currentVisualHex.current = playerPos;
     }
   }, [playerPos]);
 
-  const hexWidth = 128; 
-  const hexFaceHeight = 88; 
-
-  const getFacingFrame = (angleDeg) => {
-    if (angleDeg >= 112.5 && angleDeg < 157.5) return 0; // SW
-    if (angleDeg >= 67.5 && angleDeg < 112.5) return 1;  // S
-    if (angleDeg >= 22.5 && angleDeg < 67.5) return 2;   // SE
-    if (angleDeg >= -22.5 && angleDeg < 22.5) return 3;  // E
-    if (angleDeg >= -67.5 && angleDeg < -22.5) return 4; // NE
-    if (angleDeg >= -112.5 && angleDeg < -67.5) return 5; // N
-    if (angleDeg >= -157.5 && angleDeg < -112.5) return 6; // NW
-    return 7; // W
-  };
-
-  // NEW: When App.jsx sends a new path, set up the animation queue
-  // NEW: When App.jsx sends a new path, set up the animation queue
   useEffect(() => {
     if (activePath && activePath.length > 1) {
       currentPathQueue.current = [...activePath]; 
-      
-      // THE FIX: Instantly pin the fog tracker to the START of the path 
-      // before the animation even begins to completely prevent the visual flash!
       currentVisualHex.current = currentPathQueue.current[0];
-
-      currentPathQueue.current.shift(); // Remove the start node (we are already there)
-      targetNode.current = currentPathQueue.current.shift(); // Set the first immediate target
+      currentPathQueue.current.shift(); 
+      targetNode.current = currentPathQueue.current.shift(); 
       isMoving.current = true;
     }
   }, [activePath]);
@@ -80,7 +77,7 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
     context.scale(camera.current.zoom, camera.current.zoom); 
     context.translate(camera.current.x, camera.current.y); 
 
-    // --- CHARACTER MOVEMENT MATH (Point-to-Point) ---
+    // --- CHARACTER MOVEMENT MATH ---
     if (targetNode.current) {
       const [tQ, tR] = targetNode.current.split(',').map(Number);
       const targetPixel = axialToPixel(tQ, tR, hexWidth, hexFaceHeight);
@@ -102,14 +99,10 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
         const angleDeg = angleRads * (180 / Math.PI);
         charFacingIdx.current = getFacingFrame(angleDeg);
       } else {
-        // We reached the current mini-target!
         charPixelPos.current.x = targetPixel.x;
         charPixelPos.current.y = targetPixel.y;
-        
-        // THE FIX: Update the visual center for the Fog of War!
         currentVisualHex.current = targetNode.current;
         
-        // Grab the next node in the path, or stop if we are done
         if (currentPathQueue.current.length > 0) {
           targetNode.current = currentPathQueue.current.shift();
         } else {
@@ -118,7 +111,6 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
         }
       }
     } else {
-      // Safety catch: if we aren't moving, ensure we are snapped to playerPos
       const [pQ, pR] = playerPos.split(',').map(Number);
       const exactPixel = axialToPixel(pQ, pR, hexWidth, hexFaceHeight);
       if (charPixelPos.current) {
@@ -134,14 +126,11 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
       const [q, r] = coordString.split(',').map(Number);
       const { x, y } = axialToPixel(q, r, hexWidth, hexFaceHeight);
       
-      // THE FIX: Calculate distance from the animated position, not the final destination
       const [pQ, pR] = (currentVisualHex.current || playerPos).split(',').map(Number);
       const distFromPlayer = getHexDistance(pQ, pR, q, r);
 
-      // 1. Draw Map Tile (Apply Fog of War)
       let hexSprite = SPRITES.hexes[tile.type];
       
-      // If it's too far away, overwrite the graphic with the fog sprite
       if (distFromPlayer > 4) {
         hexSprite = SPRITES.hexes.fog;
       }
@@ -154,50 +143,56 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
         );
       }
 
-      // We only allow hovering and interaction if the tile is visible (NOT in fog)
       if (distFromPlayer <= 4) {
-        // 2. Draw Sprite-Based Hover Highlight
-        if (coordString === hoveredHex.current) {
-          let activeOverlay = SPRITES.overlays.white; 
+        // 2. Draw Hand-Drawn Path OR Basic Hover
+        if (drawnPath && drawnPath.includes(coordString) && coordString !== playerPos) {
+          
+          // Check if the entire path is over the 3-step limit
+          const isPathTooLong = drawnPath.length > 4;
 
-          if (isPlayerSelected) {
-            const path = findPath(playerPos, hoveredHex.current, mapData);
-            
-            if (!path || (path.length - 1) > 3) {
-              activeOverlay = SPRITES.overlays.red;
-            } else {
-              activeOverlay = SPRITES.overlays.yellow;
-            }
-          }
-
-          if (activeOverlay) {
+          if (isPathTooLong) {
+            // TEMPORARY DEBUG: Force a raw, programmatic red shape
+            context.beginPath();
+            context.moveTo(x + hexWidth / 2, y);                 
+            context.lineTo(x + hexWidth, y + hexFaceHeight / 2); 
+            context.lineTo(x + hexWidth / 2, y + hexFaceHeight); 
+            context.lineTo(x, y + hexFaceHeight / 2);            
+            context.closePath();
+            context.fillStyle = 'rgba(255, 0, 0, 0.5)'; 
+            context.fill();
+          } else {
+            // Normal Yellow Sprite
             context.drawImage(
               spriteSheet,
-              activeOverlay.sx, activeOverlay.sy, activeOverlay.sWidth, activeOverlay.sHeight,
+              SPRITES.overlays.yellow.sx, SPRITES.overlays.yellow.sy, SPRITES.overlays.yellow.sWidth, SPRITES.overlays.yellow.sHeight,
               x, y, hexWidth, hexWidth
             );
           }
+
+        } else if (coordString === hoveredHex.current && !isDrawingPath.current) {
+          // Just a basic white highlight for mouse hovering
+          context.drawImage(
+            spriteSheet,
+            SPRITES.overlays.white.sx, SPRITES.overlays.white.sy, SPRITES.overlays.white.sWidth, SPRITES.overlays.white.sHeight,
+            x, y, hexWidth, hexWidth
+          );
         }
 
         // 3. Draw Selection Ring
         if (coordString === playerPos && isPlayerSelected) {
-          const activeOverlay = SPRITES.overlays.white;
           context.drawImage(
             spriteSheet,
-            activeOverlay.sx, activeOverlay.sy, activeOverlay.sWidth, activeOverlay.sHeight,
+            SPRITES.overlays.white.sx, SPRITES.overlays.white.sy, SPRITES.overlays.white.sWidth, SPRITES.overlays.white.sHeight,
             x, y, hexWidth, hexWidth
           );
         }
       }
     });
 
-    // DRAW WARLOCK (Outside the map loop to stay on top)
+    // DRAW WARLOCK 
     if (playerPos && charPixelPos.current) {
       const warlockSprite = SPRITES.warlock.frames[charFacingIdx.current]; 
-      
-      // THE FIX: Slower rhythm (/ 150) and a higher bounce (* 8)
       const walkBob = isMoving.current ? Math.abs(Math.sin(Date.now() / 75)) * 8 : 0;
-      
       const charDrawX = charPixelPos.current.x + (hexWidth / 2) - (warlockSprite.sWidth / 2);
       const charDrawY = charPixelPos.current.y + (hexFaceHeight / 2) - warlockSprite.sHeight + 36 - walkBob; 
 
@@ -214,16 +209,22 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
     context.fillStyle = 'white';
     context.font = '16px monospace';
     context.textAlign = 'left';
-    context.fillText(`Hovered: ${hoveredHex.current || 'None'}`, 20, 30);
-    context.fillText(`Warlock Pos: ${playerPos}`, 20, 50);
-    context.fillText(`Status: ${isPlayerSelected ? 'READY TO MOVE' : 'IDLE'}`, 20, 70);
+    context.fillText(`Path Length: ${Math.max(0, drawnPath.length - 1)} / 3`, 20, 30);
+    context.fillText(`Status: ${isDrawingPath.current ? 'DRAWING PATH' : (isPlayerSelected ? 'READY' : 'IDLE')}`, 20, 50);
 
-  }, [spriteSheet, sortedMapArray, playerPos, isPlayerSelected]);
+  }, [spriteSheet, sortedMapArray, playerPos, isPlayerSelected, drawnPath]);
 
-  // ... (Keep canvasRef and ALL mouse/wheel handlers EXACTLY the same) ...
   const canvasRef = useResponsiveCanvas(drawGame);
 
+  // --- NEW INPUT HANDLERS ---
   const handleMouseDown = (e) => {
+    // THE FIX: Just clicking the Warlock starts drawing. No pre-selection needed!
+    if (hoveredHex.current === playerPos && !isMoving.current) {
+      isDrawingPath.current = true;
+      onPathStart(hoveredHex.current);
+      return; 
+    }
+
     isDragging.current = true;
     hasDragged.current = false;
     dragStartPos.current = { x: e.clientX, y: e.clientY };
@@ -239,6 +240,12 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
     const rawY = worldY - (hexFaceHeight / 2);
 
     hoveredHex.current = pixelToAxial(rawX, rawY, hexWidth, hexFaceHeight);
+
+    // If we are currently tracing a path, update the array and ignore the camera pan
+    if (isDrawingPath.current) {
+      if (hoveredHex.current) onPathHover(hoveredHex.current);
+      return; 
+    }
 
     if (!isDragging.current) return;
     
@@ -258,11 +265,20 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
   };
 
   const handleMouseUp = () => {
+    // If we were drawing a path, releasing the mouse executes it
+    if (isDrawingPath.current) {
+      onPathEnd();
+      isDrawingPath.current = false;
+      return;
+    }
+
+    // Otherwise, handle normal clicks (like selecting the warlock)
     if (isDragging.current && !hasDragged.current && hoveredHex.current && mapData && !isMoving.current) {
       if (mapData[hoveredHex.current]) {
         onHexClick(hoveredHex.current);
       }
     }
+    
     isDragging.current = false;
     hasDragged.current = false;
   };
@@ -280,7 +296,7 @@ export default function GameCanvas({ spriteSheet, mapData, playerPos, activePath
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onMouseUp={handleMouseUp}
-      onMouseLeave={handleMouseUp}
+      onMouseLeave={handleMouseUp} // Also fire mouse up if they drag off screen
       onWheel={handleWheel}
     />
   );
